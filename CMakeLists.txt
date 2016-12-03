@@ -4,4 +4,9 @@ project(render_gpu)
 set(CMAKE_CXX_STANDARD 11)
 
 set(SOURCE_FILES main.cpp)
+
 add_executable(render_gpu ${SOURCE_FILES})
+
+find_package(OpenCL REQUIRED)
+include_directories(${OPENCL_INCLUDE_DIR})
+target_link_libraries(render_gpu ${OPENCL_LIBRARIES} "-framework OpenCL")
