@@ -1,16 +1,17 @@
-#include <fcntl.h>
 #include <fstream>
 #include <iostream>
-#include <OpenCL/opencl.h>
 #include <sstream>
 
-#define DATA_SIZE (1024)
+#define CL_HPP_ENABLE_EXCEPTIONS
+#define CL_HPP_MINIMUM_OPENCL_VERSION 120
+#define CL_HPP_TARGET_OPENCL_VERSION 120
 
-std::string get_file_contents(const char *filename)
-{
+#include "OpenCL/cl2.hpp"
+
+std::string get_file_contents(const char *filename) {
     std::ifstream in(filename, std::ios::in);
     if (!in)
-        throw(errno);
+        throw errno;
 
     std::string contents;
     in.seekg(0, std::ios::end);
@@ -18,144 +19,63 @@ std::string get_file_contents(const char *filename)
     in.seekg(0, std::ios::beg);
     contents.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
-    return(contents);
+    return contents;
 }
 
-int main(int argc, char** argv)
-{
-    int err;
-    float data[DATA_SIZE];
-    float results[DATA_SIZE];
-    unsigned int correct;
-    size_t global;
-    size_t local;
-    cl_device_id device_id;
-    cl_context context;
-    cl_command_queue commands;
-    cl_program program;
-    cl_kernel kernel;
-    cl_mem input;
-    cl_mem output;
-
-    int i = 0;
-    unsigned int count = DATA_SIZE;
-    for(i = 0; i < count; i++)
-        data[i] = rand() / (float)RAND_MAX;
-
-    int gpu = 1;
-    err = clGetDeviceIDs(NULL, gpu ? CL_DEVICE_TYPE_GPU : CL_DEVICE_TYPE_CPU, 1, &device_id, NULL);
-    if (err != CL_SUCCESS)
-    {
-        printf("Error: Failed to create a device group!\n");
-        return EXIT_FAILURE;
+int main(void) {
+    auto platforms = std::vector<cl::Platform>();
+    cl::Platform::get(&platforms);
+    if (platforms.empty()) {
+        std::cout << "No OpenCL platform found.";
+        return -1;
     }
 
-    context = clCreateContext(0, 1, &device_id, NULL, NULL, &err);
-    if (!context)
-    {
-        printf("Error: Failed to create a compute context!\n");
-        return EXIT_FAILURE;
+    auto platform = cl::Platform::setDefault(platforms[0]);
+    auto device = cl::Device::getDefault();
+    std::cout << "Using OpenCL device '" << device.getInfo<CL_DEVICE_NAME>()
+              << "' on platform '" << platform.getInfo<CL_PLATFORM_NAME>() << "'" << std::endl;
+
+    auto source = get_file_contents("/Users/Tim/Git/render-gpu/render.cl");
+    auto squareProgram = cl::Program(source);
+    try {
+        squareProgram.build();
+    }
+    catch (...) {
+        // Print build info for all devices
+        cl_int buildErr = CL_SUCCESS;
+        auto buildInfo = squareProgram.getBuildInfo<CL_PROGRAM_BUILD_LOG>(&buildErr);
+        for (auto &pair : buildInfo) {
+            std::cerr << pair.second << std::endl << std::endl;
+        }
+        return 1;
     }
 
-    commands = clCreateCommandQueue(context, device_id, 0, &err);
-    if (!commands)
-    {
-        printf("Error: Failed to create a command commands!\n");
-        return EXIT_FAILURE;
+    auto input = std::vector<float>(32);
+    for (auto& f : input) {
+        f = rand() / (float) RAND_MAX;
     }
 
-    auto KernelSource = get_file_contents("/Users/Tim/Git/render-gpu/render.cl");
-    const char *KernelSourcePtr = &KernelSource[0];
-    program = clCreateProgramWithSource(context, 1, &KernelSourcePtr, NULL, &err);
-    if (!program)
-    {
-        printf("Error: Failed to create compute program!\n");
-        return EXIT_FAILURE;
-    }
+    auto output = std::vector<float>(input.size());
+    auto inputBuffer = cl::Buffer(begin(input), end(input), true);
+    auto outputBuffer = cl::Buffer(begin(output), end(output), false);
+    auto squareKernel = cl::KernelFunctor<cl::Buffer, cl::Buffer, size_t>(squareProgram, "square");
+    cl_int error;
+    squareKernel(
+        cl::EnqueueArgs(cl::NDRange(input.size())),
+        inputBuffer,
+        outputBuffer,
+        input.size()
+    );
 
-    err = clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
-    if (err != CL_SUCCESS)
-    {
-        size_t len;
-        char buffer[2048];
-        printf("Error: Failed to build program executable!\n");
-        clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
-        printf("%s\n", buffer);
-        exit(1);
-    }
+    cl::copy(outputBuffer, begin(output), end(output));
 
-    kernel = clCreateKernel(program, "square", &err);
-    if (!kernel || err != CL_SUCCESS)
-    {
-        printf("Error: Failed to create compute kernel!\n");
-        exit(1);
-    }
-
-    input = clCreateBuffer(context,  CL_MEM_READ_ONLY,  sizeof(float) * count, NULL, NULL);
-    output = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(float) * count, NULL, NULL);
-    if (!input || !output)
-    {
-        printf("Error: Failed to allocate device memory!\n");
-        exit(1);
-    }
-
-    err = clEnqueueWriteBuffer(commands, input, CL_TRUE, 0, sizeof(float) * count, data, 0, NULL, NULL);
-    if (err != CL_SUCCESS)
-    {
-        printf("Error: Failed to write to source array!\n");
-        exit(1);
-    }
-
-    err = 0;
-    err  = clSetKernelArg(kernel, 0, sizeof(cl_mem), &input);
-    err |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &output);
-    err |= clSetKernelArg(kernel, 2, sizeof(unsigned int), &count);
-    if (err != CL_SUCCESS)
-    {
-        printf("Error: Failed to set kernel arguments! %d\n", err);
-        exit(1);
-    }
-
-    err = clGetKernelWorkGroupInfo(kernel, device_id, CL_KERNEL_WORK_GROUP_SIZE, sizeof(local), &local, NULL);
-    if (err != CL_SUCCESS)
-    {
-        printf("Error: Failed to retrieve kernel work group info! %d\n", err);
-        exit(1);
-    }
-
-
-    global = count;
-    err = clEnqueueNDRangeKernel(commands, kernel, 1, NULL, &global, &local, 0, NULL, NULL);
-    if (err)
-    {
-        printf("Error: Failed to execute kernel!\n");
-        return EXIT_FAILURE;
-    }
-
-    clFinish(commands);
-
-    err = clEnqueueReadBuffer( commands, output, CL_TRUE, 0, sizeof(float) * count, results, 0, NULL, NULL );
-    if (err != CL_SUCCESS)
-    {
-        printf("Error: Failed to read output array! %d\n", err);
-        exit(1);
-    }
-
-    correct = 0;
-    for(i = 0; i < count; i++)
-    {
-        if(results[i] == data[i] * data[i])
+    auto correct = 0;
+    for (auto i = 0; i < input.size(); i++) {
+        std::cout << "[" << i << "] = " << output[i] << std::endl;
+        if (output[i] == input[i] * input[i])
             correct++;
     }
 
-    printf("Computed '%d/%d' correct values!\n", correct, count);
-
-    clReleaseMemObject(input);
-    clReleaseMemObject(output);
-    clReleaseProgram(program);
-    clReleaseKernel(kernel);
-    clReleaseCommandQueue(commands);
-    clReleaseContext(context);
+    std::cout << "Computed '" << correct << "/" << input.size() << "' correct values!" << std::endl;
     return 0;
 }
-
