@@ -5,8 +5,10 @@
 #define CL_HPP_ENABLE_EXCEPTIONS
 #define CL_HPP_MINIMUM_OPENCL_VERSION 120
 #define CL_HPP_TARGET_OPENCL_VERSION 120
-
 #include "OpenCL/cl2.hpp"
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb/stb_image_write.h"
 
 std::string get_file_contents(const char *filename) {
     std::ifstream in(filename, std::ios::in);
@@ -50,12 +52,14 @@ int main(void) {
         return 1;
     }
 
-    auto input = std::vector<float>(32);
+    const auto width = 640;
+    const auto height = 480;
+    auto input = std::vector<float>(width * height);
     for (auto& f : input) {
         f = rand() / (float) RAND_MAX;
     }
 
-    auto output = std::vector<float>(input.size());
+    auto output = std::vector<cl_char4>(input.size());
     auto inputBuffer = cl::Buffer(begin(input), end(input), true);
     auto outputBuffer = cl::Buffer(begin(output), end(output), false);
     auto squareKernel = cl::KernelFunctor<cl::Buffer, cl::Buffer, size_t>(squareProgram, "square");
@@ -68,14 +72,6 @@ int main(void) {
     );
 
     cl::copy(outputBuffer, begin(output), end(output));
-
-    auto correct = 0;
-    for (auto i = 0; i < input.size(); i++) {
-        std::cout << "[" << i << "] = " << output[i] << std::endl;
-        if (output[i] == input[i] * input[i])
-            correct++;
-    }
-
-    std::cout << "Computed '" << correct << "/" << input.size() << "' correct values!" << std::endl;
+    stbi_write_png("image.png", width, height, 4, &output[0], width * 4);
     return 0;
 }
