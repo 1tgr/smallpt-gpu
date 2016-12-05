@@ -10,19 +10,33 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb/stb_image_write.h"
 
-std::string get_file_contents(const char *filename) {
-    std::ifstream in(filename, std::ios::in);
-    if (!in)
-        throw errno;
+#include "render.h"
 
-    std::string contents;
-    in.seekg(0, std::ios::end);
-    contents.reserve(in.tellg());
-    in.seekg(0, std::ios::beg);
-    contents.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    in.close();
-    return contents;
+static const std::string kernel_source = {
+#include "kernel_gen.h"
+};
+
+static cl_float3 vec(float x = 0.0, float y = 0.0, float z = 0.0) {
+    cl_float3 vec = { .x = x, .y = y, .z = z};
+    return vec;
 }
+
+static cl_float3 operator*(cl_float3 a, float b) {
+    cl_float3 vec = { .x = a.x * b, .y = a.y * b, .z = a.z * b };
+    return vec;
+}
+
+static Sphere scene[] = {//Scene: radius, position, emission, color, material
+    Sphere(1e5, vec( 1e5+1,40.8,81.6), vec(),vec(.75,.25,.25),DIFF),//Left
+    Sphere(1e5, vec(-1e5+99,40.8,81.6),vec(),vec(.25,.25,.75),DIFF),//Rght
+    Sphere(1e5, vec(50,40.8, 1e5),     vec(),vec(.75,.75,.75),DIFF),//Back
+    Sphere(1e5, vec(50,40.8,-1e5+170), vec(),vec(),           DIFF),//Frnt
+    Sphere(1e5, vec(50, 1e5, 81.6),    vec(),vec(.75,.75,.75),DIFF),//Botm
+    Sphere(1e5, vec(50,-1e5+81.6,81.6),vec(),vec(.75,.75,.75),DIFF),//Top
+    Sphere(16.5,vec(27,16.5,47),       vec(),vec(1,1,1)*.999, SPEC),//Mirr
+    Sphere(16.5,vec(73,16.5,78),       vec(),vec(1,1,1)*.999, REFR),//Glas
+    Sphere(600, vec(50,681.6-.27,81.6),vec(12,12,12),  vec(), DIFF) //Lite
+};
 
 int main(void) {
     auto platforms = std::vector<cl::Platform>();
@@ -37,15 +51,14 @@ int main(void) {
     std::cout << "Using OpenCL device '" << device.getInfo<CL_DEVICE_NAME>()
               << "' on platform '" << platform.getInfo<CL_PLATFORM_NAME>() << "'" << std::endl;
 
-    auto source = get_file_contents("/Users/Tim/Git/render-gpu/render.cl");
-    auto squareProgram = cl::Program(source);
+    auto renderProgram = cl::Program(kernel_source);
     try {
-        squareProgram.build();
+        renderProgram.build();
     }
     catch (...) {
         // Print build info for all devices
         cl_int buildErr = CL_SUCCESS;
-        auto buildInfo = squareProgram.getBuildInfo<CL_PROGRAM_BUILD_LOG>(&buildErr);
+        auto buildInfo = renderProgram.getBuildInfo<CL_PROGRAM_BUILD_LOG>(&buildErr);
         for (auto &pair : buildInfo) {
             std::cerr << pair.second << std::endl << std::endl;
         }
@@ -54,24 +67,22 @@ int main(void) {
 
     const auto width = 640;
     const auto height = 480;
-    auto input = std::vector<float>(width * height);
-    for (auto& f : input) {
-        f = rand() / (float) RAND_MAX;
-    }
-
-    auto output = std::vector<cl_char4>(input.size());
-    auto inputBuffer = cl::Buffer(begin(input), end(input), true);
-    auto outputBuffer = cl::Buffer(begin(output), end(output), false);
-    auto squareKernel = cl::KernelFunctor<cl::Buffer, cl::Buffer, size_t>(squareProgram, "square");
-    cl_int error;
-    squareKernel(
-        cl::EnqueueArgs(cl::NDRange(input.size())),
-        inputBuffer,
-        outputBuffer,
-        input.size()
+    const auto stride = width * 4;
+    auto output = std::vector<cl_char4>(static_cast<size_t>(stride) * height);
+    auto sceneBuffer = cl::Buffer(std::begin(scene), std::end(scene), true);
+    auto outputBuffer = cl::Buffer(std::begin(output), std::end(output), false);
+    auto renderKernel = cl::KernelFunctor<int, int, int, cl::Buffer, int, cl::Buffer>(renderProgram, "renderKernel");
+    renderKernel(
+        cl::EnqueueArgs(cl::NDRange(width, height)),
+        width,
+        height,
+        stride,
+        sceneBuffer,
+        sizeof(scene) / sizeof(scene[0]),
+        outputBuffer
     );
 
     cl::copy(outputBuffer, begin(output), end(output));
-    stbi_write_png("image.png", width, height, 4, &output[0], width * 4);
+    stbi_write_png("image.png", width, height, 4, &output[0], stride);
     return 0;
 }
