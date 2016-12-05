@@ -26,6 +26,14 @@ static cl_float3 operator*(cl_float3 a, float b) {
     return vec;
 }
 
+static float clamp(float x) {
+    return x<0 ? 0 : x>1 ? 1 : x;
+}
+
+static int toInt(float x) {
+    return int(pow(clamp(x), 1.0f / 2.2f) * 255.f + .5f);
+}
+
 static Sphere scene[] = {//Scene: radius, position, emission, color, material
     Sphere(1e5, vec( 1e5+1,40.8,81.6), vec(),vec(.75,.25,.25),DIFF),//Left
     Sphere(1e5, vec(-1e5+99,40.8,81.6),vec(),vec(.25,.25,.75),DIFF),//Rght
@@ -56,7 +64,6 @@ int main(void) {
         renderProgram.build();
     }
     catch (...) {
-        // Print build info for all devices
         cl_int buildErr = CL_SUCCESS;
         auto buildInfo = renderProgram.getBuildInfo<CL_PROGRAM_BUILD_LOG>(&buildErr);
         for (auto &pair : buildInfo) {
@@ -67,22 +74,32 @@ int main(void) {
 
     const auto width = 640;
     const auto height = 480;
-    const auto stride = width * 4;
-    auto output = std::vector<cl_char4>(static_cast<size_t>(stride) * height);
+    const auto samples = 1000;
+    auto output = std::vector<Vec>(width * height);
     auto sceneBuffer = cl::Buffer(std::begin(scene), std::end(scene), true);
     auto outputBuffer = cl::Buffer(std::begin(output), std::end(output), false);
-    auto renderKernel = cl::KernelFunctor<int, int, int, cl::Buffer, int, cl::Buffer>(renderProgram, "renderKernel");
+    auto renderKernel = cl::KernelFunctor<int, int, cl::Buffer, int, cl::Buffer>(renderProgram, "renderKernel");
     renderKernel(
-        cl::EnqueueArgs(cl::NDRange(width, height)),
+        cl::EnqueueArgs(cl::NDRange(width, height, samples)),
         width,
         height,
-        stride,
         sceneBuffer,
         sizeof(scene) / sizeof(scene[0]),
         outputBuffer
     );
 
     cl::copy(outputBuffer, begin(output), end(output));
-    stbi_write_png("image.png", width, height, 4, &output[0], stride);
+    auto data = std::vector<cl_char4>();
+    data.reserve(width * height);
+    for (auto color : output) {
+        cl_char4 pixel;
+        pixel.x = (cl_char) toInt(color.x / samples);
+        pixel.y = (cl_char) toInt(color.y / samples);
+        pixel.z = (cl_char) toInt(color.z / samples);
+        pixel.w = 255;
+        data.push_back(pixel);
+    }
+
+    stbi_write_png("image.png", width, height, 4, &data[0], width * 4);
     return 0;
 }

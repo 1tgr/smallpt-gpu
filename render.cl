@@ -1,11 +1,15 @@
 #include "render.h"
 
-#ifndef __OPENCL_VERSION__
+#ifdef __OPENCL_VERSION__
+
+#define sqrtf sqrt
+
+#else
+
 #include <math.h>
-#include <cl_kernel.h>
 #define __global
 #define __kernel
-typedef Vec char4;
+
 #endif
 
 static Vec vec(float x, float y, float z) {
@@ -16,24 +20,11 @@ static Vec vec(float x, float y, float z) {
     return vec;
 }
 
-static char4 color(char r, char g, char b) {
-    char4 color;
-    color.x = r;
-    color.y = g;
-    color.z = b;
-    color.w = 255;
-    return color;
-}
-
 static Ray ray(Vec o, Vec d) {
     Ray ray;
     ray.o = o;
     ray.d = d;
     return ray;
-}
-
-static int toInt(float x) {
-    return int(pow(clamp(x, 0.0f, 1.0f), 1.0f / 2.2f) * 255.f + .5f);
 }
 
 static float intersect_sphere(__global const Sphere *sphere, const Ray *r) { // returns distance, 0 if nohit
@@ -46,7 +37,7 @@ static float intersect_sphere(__global const Sphere *sphere, const Ray *r) { // 
         return 0;
     }
 
-    det = sqrt(det);
+    det = sqrtf(det);
     t = b - det;
     if (t > eps) {
         return t;
@@ -73,73 +64,84 @@ static bool intersect_scene(__global const Sphere *scene, const int sceneSize, c
     return *t < inf;
 }
 
+static int rand_next(long long *seed, int bits) {
+    *seed = (*seed * 0x5DEECE66DLL + 0xBLL) & ((1LL << 48) - 1);
+    return (int)(*seed >> (48 - bits));
+}
+
+static float randf(long long *seed) {
+    return rand_next(seed, 24) / ((float)(1 << 24));
+}
+
 __kernel void renderKernel(
     const int width,
     const int height,
-    const int stride,
     __global const Sphere *scene,
     const int sceneSize,
-    __global char4 *output
+    __global float3 *output
 ) {
     Ray cam = ray(vec(50, 52, 295.6f), normalize(vec(0, -0.042612f, -1))); // cam pos, dir
     Vec cx = vec(width * .5135f / height, 0, 0), cy = normalize(cross(cx, cam.d)) * .5135f;
     int x = get_global_id(0);
     int y = get_global_id(1);
-    float sx = 0, sy = 0, dx = 0, dy = 0;
+    int samp = get_global_id(2);
+    long long seed = x * y * samp;
+    float r1=2*randf(&seed), dx=r1<1 ? sqrtf(r1)-1: 1-sqrtf(2-r1);
+    float r2=2*randf(&seed), dy=r2<1 ? sqrtf(r2)-1: 1-sqrtf(2-r2);
     Vec d
-        = cx*( ( (sx+.5f + dx)/2 + x)/width - .5f)
-        + cy*( ( (sy+.5f + dy)/2 + y)/height - .5f)
+        = cx*(((dx + .5f) / 2 + x) / width - .5f)
+        + cy*(((dy + .5f) / 2 + y) / height - .5f)
         + cam.d;
     //r = r + radiance(Ray(cam.o+d*140,d.norm()),0,Xi)*(1./samps);
     Ray r = ray(cam.o + d * 140.f, normalize(d));
     float t;
     int id;
-    char4 pixel;
+    Vec color;
     if (intersect_scene(scene, sceneSize, &r, &t, &id)) {
         switch (id) {
             case 0:
-                pixel = color(255, 0, 0);
+                color = vec(1, 0, 0);
                 break;
 
             case 1:
-                pixel = color(0, 255, 0);
+                color = vec(0, 1, 0);
                 break;
 
             case 2:
-                pixel = color(0, 0, 255);
+                color = vec(0, 0, 1);
                 break;
 
             case 3:
-                pixel = color(128, 0, 0);
+                color = vec(0.5f, 0, 0);
                 break;
 
             case 4:
-                pixel = color(0, 128, 0);
+                color = vec(0, 0.5f, 0);
                 break;
 
             case 5:
-                pixel = color(0, 0, 128);
+                color = vec(0, 0, 0.5f);
                 break;
 
             case 6:
-                pixel = color(64, 0, 0);
+                color = vec(0.25f, 0, 0);
                 break;
 
             case 7:
-                pixel = color(0, 64, 0);
+                color = vec(0, 0.25f, 0);
                 break;
 
             case 8:
-                pixel = color(0, 0, 64);
+                color = vec(0, 0, 0.25f);
                 break;
 
             default:
-                pixel = color(255, 255, 0);
+                color = vec(1, 1, 0);
                 break;
         }
     } else {
-        pixel = color(0, 0, 0);
+        color = vec(0, 0, 0);
     }
 
-    output[(height - y - 1) * stride / 4 + x] = pixel;
+    output[(height - y - 1) * width + x] += color;
 }
