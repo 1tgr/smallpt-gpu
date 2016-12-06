@@ -1,37 +1,37 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <vector>
 
 #define CL_HPP_ENABLE_EXCEPTIONS
 #define CL_HPP_MINIMUM_OPENCL_VERSION 120
 #define CL_HPP_TARGET_OPENCL_VERSION 120
 #include "OpenCL/cl2.hpp"
+#define USE_GPU
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb/stb_image_write.h"
 
 #include "render.h"
 
+#ifdef USE_GPU
+
 static const std::string kernel_source = {
 #include "kernel_gen.h"
 };
 
-static cl_float3 vec(float x = 0.0, float y = 0.0, float z = 0.0) {
-    cl_float3 vec = { .x = x, .y = y, .z = z};
-    return vec;
-}
+#else
 
-static cl_float3 operator*(cl_float3 a, float b) {
-    cl_float3 vec = { .x = a.x * b, .y = a.y * b, .z = a.z * b };
-    return vec;
-}
+#include "render.cl"
 
-static float clamp(float x) {
+#endif
+
+static num clamp(num x) {
     return x<0 ? 0 : x>1 ? 1 : x;
 }
 
-static int toInt(float x) {
-    return int(pow(clamp(x), 1.0f / 2.2f) * 255.f + .5f);
+static unsigned char to_byte(num x) {
+    return static_cast<unsigned char>(pow(clamp(x), 1.0f / 2.2f) * 255.f + .5f);
 }
 
 static Sphere scene[] = {//Scene: radius, position, emission, color, material
@@ -47,6 +47,12 @@ static Sphere scene[] = {//Scene: radius, position, emission, color, material
 };
 
 int main(void) {
+    const auto width = 640;
+    const auto height = 480;
+    const auto samples = 100;
+    auto output = std::vector<Vec>(width * height);
+
+#ifdef USE_GPU
     auto platforms = std::vector<cl::Platform>();
     cl::Platform::get(&platforms);
     if (platforms.empty()) {
@@ -72,34 +78,38 @@ int main(void) {
         return 1;
     }
 
-    const auto width = 640;
-    const auto height = 480;
-    const auto samples = 1000;
-    auto output = std::vector<Vec>(width * height);
     auto sceneBuffer = cl::Buffer(std::begin(scene), std::end(scene), true);
     auto outputBuffer = cl::Buffer(std::begin(output), std::end(output), false);
-    auto renderKernel = cl::KernelFunctor<int, int, cl::Buffer, int, cl::Buffer>(renderProgram, "renderKernel");
+    auto renderKernel = cl::KernelFunctor<int, int, int, cl::Buffer, int, cl::Buffer>(renderProgram, "renderKernel");
     renderKernel(
         cl::EnqueueArgs(cl::NDRange(width, height, samples)),
         width,
         height,
+        samples,
         sceneBuffer,
         sizeof(scene) / sizeof(scene[0]),
         outputBuffer
     );
 
     cl::copy(outputBuffer, begin(output), end(output));
-    auto data = std::vector<cl_char4>();
-    data.reserve(width * height);
+#else
+    for (auto y = 0; y < height; y++) {
+        for (auto x = 0; x < width; x++) {
+            for (auto samp = 0; samp < samples; samp++) {
+                renderKernel(width, height, samples, scene, sizeof(scene) / sizeof(scene[0]), &output[0], x, y, samp);
+            }
+        }
+    }
+#endif
+
+    auto data = std::vector<unsigned char>();
+    data.reserve(width * height * 3);
     for (auto color : output) {
-        cl_char4 pixel;
-        pixel.x = (cl_char) toInt(color.x / samples);
-        pixel.y = (cl_char) toInt(color.y / samples);
-        pixel.z = (cl_char) toInt(color.z / samples);
-        pixel.w = 255;
-        data.push_back(pixel);
+        data.push_back(to_byte(color.x));
+        data.push_back(to_byte(color.y));
+        data.push_back(to_byte(color.z));
     }
 
-    stbi_write_png("image.png", width, height, 4, &data[0], width * 4);
+    stbi_write_png("image.png", width, height, 3, &data[0], width * 3);
     return 0;
 }
